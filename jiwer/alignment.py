@@ -26,13 +26,42 @@ from typing import Dict, List, Tuple, Union
 
 from jiwer.process import CharacterOutput, WordOutput, AlignmentChunk
 
+from fontTools.ttLib import TTFont
+import os
+import matplotlib
+
+
+FONT = TTFont(os.path.join(matplotlib.get_data_path(), 'fonts', 'ttf', 'DejaVuSans.ttf'))
+FONT_NAME = 'DejaVu Sans'
+
+def get_string_width(text):
+    glyph_set = FONT.getGlyphSet()
+    width = 0
+    for char in text:
+        glyph = glyph_set[FONT.getBestCmap()[ord(char)]]
+        width += glyph.width
+    return width
+
+
 __all__ = ["visualize_alignment"]
+
+
+def pad_string(s, target_string, pad_char=' '):
+    # current_width = visual_width(s)
+    current_width = get_string_width(s)
+    target_width = get_string_width(target_string)
+    if current_width >= target_width:
+        return s
+    padding_needed = target_width - current_width
+    padding_needed //= get_string_width(pad_char)
+    return s + pad_char * padding_needed
 
 
 def visualize_alignment(
     output: Union[WordOutput, CharacterOutput],
     show_measures: bool = True,
     skip_correct: bool = True,
+    hebrew: bool = False,
 ) -> str:
     """
     Visualize the output of [jiwer.process_words][process.process_words] and
@@ -102,14 +131,14 @@ def visualize_alignment(
     alignment = output.alignments
     is_cer = isinstance(output, CharacterOutput)
 
-    final_str = ""
+    final_str = f"Recommended viewing font:{FONT_NAME}\n\n"
     for idx, (gt, hp, chunks) in enumerate(zip(references, hypothesis, alignment)):
         if skip_correct and len(chunks) == 1 and chunks[0].type == "equal":
             continue
 
         final_str += f"sentence {idx+1}\n"
         final_str += _construct_comparison_string(
-            gt, hp, chunks, include_space_seperator=not is_cer
+            gt, hp, chunks, include_space_seperator=not is_cer, hebrew_flag=hebrew
         )
         final_str += "\n"
 
@@ -128,7 +157,7 @@ def visualize_alignment(
             final_str += f"\nwip={output.wip*100:.2f}%"
             final_str += f"\nwer={output.wer*100:.2f}%\n"
     else:
-        # remove last newline
+        # remove last newline 
         final_str = final_str[:-1]
 
     return final_str
@@ -139,39 +168,58 @@ def _construct_comparison_string(
     hypothesis: List[str],
     ops: List[AlignmentChunk],
     include_space_seperator: bool = False,
+    hebrew_flag: bool = False,
 ) -> str:
     ref_str = "REF: "
     hyp_str = "HYP: "
-    op_str = "     "
+    op_str = pad_string(" ", hyp_str)
 
     for op in ops:
         if op.type == "equal" or op.type == "substitute":
             ref = reference[op.ref_start_idx : op.ref_end_idx]
             hyp = hypothesis[op.hyp_start_idx : op.hyp_end_idx]
-            op_char = " " if op.type == "equal" else "s"
+            if not hebrew_flag:
+                op_char = " " if op.type == "equal" else "s"
+            else:
+                op_char = " " if op.type == "equal" else "שינוי"
         elif op.type == "delete":
             ref = reference[op.ref_start_idx : op.ref_end_idx]
             hyp = ["*" for _ in range(len(ref))]
-            op_char = "d"
+            op_char = "d" if not hebrew_flag else "מחיקה"
         elif op.type == "insert":
             hyp = hypothesis[op.hyp_start_idx : op.hyp_end_idx]
             ref = ["*" for _ in range(len(hyp))]
-            op_char = "i"
+            op_char = "i" if not hebrew_flag else "הוספה"
         else:
             raise ValueError(f"unparseable op name={op.type}")
 
         op_chars = [op_char for _ in range(len(ref))]
         for rf, hp, c in zip(ref, hyp, op_chars):
-            str_len = max(len(rf), len(hp), len(c))
+            str_len_in = max(len(rf), len(hp), len(c))
 
-            if rf == "*":
-                rf = "".join(["*"] * str_len)
-            elif hp == "*":
-                hp = "".join(["*"] * str_len)
+            rf = '   ' + rf + '   ' if hebrew_flag else rf
+            hp = '   ' + hp + '   ' if hebrew_flag else hp
+            c = '   ' + c + '   ' if hebrew_flag else c
 
-            ref_str += f"{rf:>{str_len}}"
-            hyp_str += f"{hp:>{str_len}}"
-            op_str += f"{c.upper():>{str_len}}"
+            longest_str = max(rf, hp, c, key=len)
+
+            if "*" in rf:
+                rf = rf.replace("*", "*" * str_len_in)
+            elif "*" in hp:
+                hp = hp.replace("*", "*" * str_len_in)
+
+            ref_str += f"{pad_string(rf, longest_str)}"
+            hyp_str += f"{pad_string(hp, longest_str)}"
+            op_str += f"{pad_string(c.upper(), longest_str)}"
+
+            longest_str = max(ref_str, hyp_str, op_str, key=get_string_width)
+
+            if get_string_width(longest_str) - get_string_width(ref_str) >= get_string_width(" "):
+                ref_str += " "
+            if get_string_width(longest_str) - get_string_width(hyp_str) >= get_string_width(" "):
+                hyp_str += " "
+            if get_string_width(longest_str) - get_string_width(op_str) >= get_string_width(" "):
+                op_str += " "
 
             if include_space_seperator:
                 ref_str += " "
